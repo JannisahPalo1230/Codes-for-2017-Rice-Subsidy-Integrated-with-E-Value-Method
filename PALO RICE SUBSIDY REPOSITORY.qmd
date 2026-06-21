@@ -1,0 +1,657 @@
+---
+title: "Appendix: R Code for 2017 Rice Subsidy Analysis"
+author: "Jannisah M. Palo"
+format: pdf
+editor: source
+warning: false
+---
+
+# Appendix: R Code
+
+## A.1 Data Loading
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(lubridate)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(broom)
+library(scales)
+library(EValue)
+
+# Load all survey years
+hh11     <- suppressMessages(read_csv("APIS PUF 2011 Household.CSV"))
+person11 <- read_csv("APIS PUF 2011 Person.CSV")
+
+hh13     <- read_csv("APIS PUF 2013 Household.CSV")
+person13 <- read_csv("APIS PUF 2013 Person.CSV")
+
+hh14     <- read_csv("APIS PUF 2014 Household.CSV")
+person14 <- read_csv("APIS PUF 2014 Person.CSV")
+
+hh16     <- read_csv("APIS PUF 2016 Household.CSV")
+person16 <- read_csv("APIS PUF 2016 Person.CSV")
+
+hh17     <- read_csv("APIS PUF 2017 Household.CSV")
+person17 <- read_csv("APIS PUF 2017 Person.CSV")
+```
+
+---
+
+## A.2 Household-Level Dataset Construction
+
+```{r}
+# 2011
+person11_hh <- person11 %>%
+  rename(ID = PHHNUM, PPS01 = PPS04) %>%
+  group_by(ID) %>%
+  summarise(fourps = as.integer(any(PPS01 == 1, na.rm = TRUE)), .groups = "drop")
+
+hh_2011 <- hh11 %>%
+  rename(ID = PHHNUM) %>%
+  left_join(person11_hh, by = "ID") %>%
+  mutate(fourps = ifelse(is.na(fourps), 0, fourps), year = 2011) %>%
+  rename(REGN = PREG, FSIZE = PUFSIZE, RFACT = HHWGT,
+         PUFEQ5 = PUFFQ5, PUFEQ6G = PUFFQ6G,
+         FOOD = PUFFOOD, TOINC = PUFTOTINC,
+         PUFH12_HGC = PUFH14_HGC) %>%
+  filter(REGN == 10)
+
+# 2013
+person13_hh <- person13 %>%
+  rename(ID = SEQ) %>%
+  group_by(ID) %>%
+  summarise(fourps = as.integer(any(PPS01 == 1, na.rm = TRUE)), .groups = "drop")
+
+hh_2013 <- hh13 %>%
+  rename(ID = SEQ) %>%
+  left_join(person13_hh, by = "ID") %>%
+  mutate(fourps = ifelse(is.na(fourps), 0, fourps), year = 2013) %>%
+  rename(REGN = REGION, FOOD = T_FOOD, PUFH12_HGC = PUFH14_HGC) %>%
+  filter(REGN == 10)
+
+# 2014
+person14_hh <- person14 %>%
+  group_by(ID) %>%
+  summarise(fourps = as.integer(any(PPS01 == 1, na.rm = TRUE)), .groups = "drop")
+
+hh_2014 <- hh14 %>%
+  left_join(person14_hh, by = "ID") %>%
+  mutate(fourps = ifelse(is.na(fourps), 0, fourps), year = 2014) %>%
+  rename(PUFEQ6G = PUFFQ6G, PUFEQ5 = PUFFQ5) %>%
+  filter(REGN == 10)
+
+# 2016
+person16_hh <- person16 %>%
+  group_by(ID) %>%
+  summarise(fourps = as.integer(any(PPS01 == 1, na.rm = TRUE)), .groups = "drop")
+
+hh_2016 <- hh16 %>%
+  left_join(person16_hh, by = "ID") %>%
+  mutate(fourps = ifelse(is.na(fourps), 0, fourps), post = 0, year = 2016) %>%
+  filter(REGN == 10)
+
+# 2017
+person17_hh <- person17 %>%
+  group_by(ID) %>%
+  summarise(fourps = as.integer(any(PPS01 == 1, na.rm = TRUE)), .groups = "drop")
+
+hh_2017 <- hh17 %>%
+  left_join(person17_hh, by = "ID") %>%
+  mutate(fourps = ifelse(is.na(fourps), 0, fourps), post = 1, year = 2017) %>%
+  rename(REGN = REGO) %>%
+  filter(REGN == 10)
+```
+
+---
+
+## A.3 Stacking and Variable Preparation
+
+```{r}
+# Coerce all to character before stacking
+hh_2011 <- hh_2011 %>% mutate(across(everything(), as.character))
+hh_2013 <- hh_2013 %>% mutate(across(everything(), as.character))
+hh_2014 <- hh_2014 %>% mutate(across(everything(), as.character))
+hh_2016 <- hh_2016 %>% mutate(across(everything(), as.character))
+hh_2017 <- hh_2017 %>% mutate(across(everything(), as.character))
+
+# Five-year panel (for pre-trend and event study)
+combined5 <- bind_rows(hh_2011, hh_2013, hh_2014, hh_2016, hh_2017) %>%
+  filter(REGN == 10)
+
+with(combined5, table(fourps, post))
+```
+
+```{r}
+# Convert all analysis variables to numeric
+combined5 <- combined5 %>%
+  mutate(
+    fourps     = as.numeric(fourps),
+    post       = as.numeric(post),
+    FOOD       = as.numeric(FOOD),
+    year       = as.numeric(year),
+    REGN       = as.factor(REGN),
+    RFACT      = as.numeric(RFACT),
+    FSIZE      = as.numeric(FSIZE),
+    PUFEQ5     = as.numeric(PUFEQ5),
+    PUFEQ6G    = as.numeric(PUFEQ6G),
+    TOINC      = as.numeric(TOINC),
+    PUFH04_SEX = as.numeric(PUFH04_SEX),
+    PUFH05_AGE = as.numeric(PUFH05_AGE)
+  )
+
+# Two-year DiD dataset (2016–2017, complete cases only)
+did_data <- combined5 %>%
+  filter(year %in% c(2016, 2017)) %>%
+  filter(!is.na(FOOD), !is.na(fourps), !is.na(post), !is.na(year),
+         !is.na(REGN), !is.na(RFACT), !is.na(FSIZE),
+         !is.na(PUFEQ5), !is.na(PUFEQ6G), !is.na(TOINC),
+         !is.na(PUFH04_SEX), !is.na(PUFH05_AGE))
+
+with(did_data, table(fourps, post))
+```
+
+---
+
+## A.4 Difference-in-Differences Models
+
+### Basic DiD
+
+```{r}
+did_model <- lm(FOOD ~ fourps * post, data = did_data)
+summary(did_model)
+```
+
+### DiD with Covariates and Survey Weights (Final Model)
+
+```{r}
+did_model_w <- lm(
+  FOOD ~ fourps * post + FSIZE + log(TOINC) + PUFEQ6G,
+  data    = did_data,
+  weights = RFACT
+)
+summary(did_model_w)
+```
+
+---
+
+## A.5 DiD Plot
+
+```{r}
+# Compute weighted group means (2016–2017)
+trend_dataa <- combined5 %>%
+  filter(year %in% c(2016, 2017), !is.na(FOOD), !is.na(RFACT)) %>%
+  group_by(year, fourps) %>%
+  summarise(mean_food = weighted.mean(FOOD, w = RFACT, na.rm = TRUE),
+            .groups = "drop")
+
+# Counterfactual trend for treated group
+treat_2016  <- trend_dataa %>% filter(year == 2016, fourps == 1) %>% pull(mean_food)
+treat_2017  <- trend_dataa %>% filter(year == 2017, fourps == 1) %>% pull(mean_food)
+control_change <- (trend_dataa %>% filter(year == 2017, fourps == 0) %>% pull(mean_food)) -
+                  (trend_dataa %>% filter(year == 2016, fourps == 0) %>% pull(mean_food))
+cf_2017 <- treat_2016 + control_change
+
+counterfactual <- data.frame(year = c(2016, 2017),
+                              mean_food = c(treat_2016, cf_2017))
+```
+
+```{r, echo=FALSE}
+did_plot <- ggplot(trend_dataa,
+       aes(x = year, y = mean_food,
+           color = factor(fourps), group = factor(fourps))) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3.5, shape = 21, fill = "white", stroke = 1.5) +
+  geom_line(data = counterfactual,
+            aes(x = year, y = mean_food),
+            linetype = "dashed", color = "black",
+            linewidth = 1, inherit.aes = FALSE) +
+  geom_segment(aes(x = 2017, xend = 2017,
+                   y = cf_2017, yend = treat_2017),
+               color = "black", linewidth = 0.8,
+               arrow = arrow(ends = "both", length = unit(0.2, "cm")),
+               inherit.aes = FALSE) +
+  annotate("text", x = 2017.05, y = (cf_2017 + treat_2017) / 2,
+           label = "DiD = \u20B12,753", hjust = 0, size = 3.5, color = "black") +
+  annotate("text", x = 2016.5, y = cf_2017 - 500,
+           label = "Counterfactual", hjust = 0, size = 3,
+           color = "black", fontface = "italic") +
+  scale_color_manual(values = c("0" = "#E07B6A", "1" = "#5B9BD5"),
+                     labels = c("Non-4Ps", "4Ps")) +
+  scale_x_continuous(breaks = c(2016, 2017),
+                     labels = c("2016\n(Pre)", "2017\n(Post)")) +
+  scale_y_continuous(labels = comma_format(prefix = "\u20B1")) +
+  labs(x = "Survey Year", y = "Weighted Mean Food Expenditure (\u20B1)",
+       color = "Household Group",
+       title = "Difference-in-Differences: Food Expenditure Trends",
+       subtitle = "4Ps and Non-4Ps Households, Region X (2016\u20132017)",
+       caption = paste0("Note: Dashed line represents counterfactual trend for 4Ps households.\n",
+                        "Source: APIS 2016 and 2017, Philippine Statistics Authority.")) +
+  theme_classic() +
+  theme(
+    plot.title    = element_text(face = "bold", size = 13, hjust = 0),
+    plot.subtitle = element_text(size = 10, color = "gray40", hjust = 0),
+    plot.caption  = element_text(size = 8, color = "gray50", hjust = 0),
+    axis.title    = element_text(size = 11, face = "bold"),
+    axis.text     = element_text(size = 10),
+    legend.position   = "right",
+    legend.title      = element_text(face = "bold", size = 10),
+    legend.text       = element_text(size = 10),
+    legend.background = element_rect(fill = "white", color = "gray80"),
+    panel.grid.major.y = element_line(color = "gray90", linewidth = 0.5),
+    panel.grid.major.x = element_blank(),
+    plot.margin = margin(15, 15, 15, 15)
+  )
+
+ggsave("did_plot.png", plot = did_plot, width = 7, height = 5, dpi = 300, bg = "white")
+did_plot
+```
+
+---
+
+## A.6 Extended DiD Plot (All Survey Years, 2011–2017)
+
+```{r}
+# Weighted group means across all five years
+trend_data <- combined5 %>%
+  filter(year %in% c(2011, 2013, 2014, 2016, 2017),
+         !is.na(FOOD), !is.na(RFACT)) %>%
+  group_by(year, fourps) %>%
+  summarise(mean_food = weighted.mean(FOOD, w = RFACT, na.rm = TRUE),
+            .groups = "drop")
+
+# Counterfactual
+treat_2016     <- trend_data %>% filter(year == 2016, fourps == 1) %>% pull(mean_food)
+treat_2017     <- trend_data %>% filter(year == 2017, fourps == 1) %>% pull(mean_food)
+control_change <- (trend_data %>% filter(year == 2017, fourps == 0) %>% pull(mean_food)) -
+                  (trend_data %>% filter(year == 2016, fourps == 0) %>% pull(mean_food))
+cf_2017        <- treat_2016 + control_change
+
+counterfactual <- data.frame(year = c(2016, 2017),
+                              mean_food = c(treat_2016, cf_2017))
+```
+
+```{r, echo=FALSE}
+font_15 <- 15 / .pt
+
+did_rice_plot <- ggplot(trend_data,
+       aes(x = year, y = mean_food,
+           color = factor(fourps), group = factor(fourps))) +
+  annotate("rect", xmin = 2010.5, xmax = 2016.25, ymin = -Inf, ymax = Inf,
+           fill = "gray95", alpha = 0.5) +
+  annotate("rect", xmin = 2016.25, xmax = 2017.5, ymin = -Inf, ymax = Inf,
+           fill = "lightyellow", alpha = 0.5) +
+  geom_vline(xintercept = 2016.25, linetype = "dotted",
+             color = "gray40", linewidth = 0.8) +
+  annotate("text", x = 2013.5, y = 38500, label = "Pre-Intervention",
+           size = font_15, color = "gray40", fontface = "italic") +
+  annotate("text", x = 2017, y = 38500, label = "Post",
+           size = font_15, color = "gray40", fontface = "italic") +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3, shape = 21, fill = "white", stroke = 1.5) +
+  geom_line(data = counterfactual, aes(x = year, y = mean_food),
+            linetype = "dashed", color = "black",
+            linewidth = 1, inherit.aes = FALSE) +
+  geom_segment(aes(x = 2017, xend = 2017, y = cf_2017, yend = treat_2017),
+               color = "black", linewidth = 0.8,
+               arrow = arrow(ends = "both", length = unit(0.2, "cm")),
+               inherit.aes = FALSE) +
+  annotate("text", x = 2016.42, y = cf_2017 - 900,
+           label = "Counterfactual", hjust = 0, size = font_15,
+           color = "black", fontface = "italic") +
+  scale_color_manual(values = c("0" = "#E07B6A", "1" = "#5B9BD5"),
+                     labels = c("Non-4Ps", "4Ps")) +
+  scale_x_continuous(breaks = c(2011, 2013, 2014, 2016, 2017),
+                     limits = c(2010.5, 2018.1)) +
+  scale_y_continuous(labels = comma_format(prefix = "\u20B1"),
+                     limits = c(25000, 40000)) +
+  coord_cartesian(clip = "off") +
+  labs(x = "Survey Year", y = "Mean Food Expenditure (\u20B1)",
+       color = "Household Group",
+       title = "Food Expenditure Trends of 4Ps and Non-4Ps Households",
+       subtitle = "Region X, APIS 2011\u20132017 | Dashed line = counterfactual trend") +
+  theme_classic(base_size = 15) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 15, hjust = 0),
+    plot.subtitle = element_text(size = 15, color = "gray40", hjust = 0),
+    axis.title    = element_text(size = 15, face = "bold"),
+    axis.text     = element_text(size = 15),
+    legend.position   = "right",
+    legend.title      = element_text(face = "bold", size = 15),
+    legend.text       = element_text(size = 15),
+    legend.background = element_rect(fill = "white", color = "gray80"),
+    panel.grid.major.y = element_line(color = "gray90", linewidth = 0.4),
+    panel.grid.major.x = element_blank(),
+    plot.margin = margin(15, 40, 15, 15)
+  )
+
+ggsave("did_rice_plot.png", plot = did_rice_plot,
+       width = 9, height = 5, dpi = 300, bg = "white")
+did_rice_plot
+```
+
+---
+
+## A.7 Parallel Trends Assumption Tests
+
+### A.7.1 Pre-Treatment Trends Plot (2011–2016)
+
+```{r, echo=FALSE}
+trend_pre <- combined5 %>%
+  filter(year %in% c(2011, 2013, 2014, 2016), !is.na(FOOD), !is.na(RFACT)) %>%
+  group_by(year, fourps) %>%
+  summarise(mean_food = weighted.mean(FOOD, w = RFACT, na.rm = TRUE),
+            .groups = "drop")
+
+pre_did_plot <- ggplot(trend_pre,
+       aes(x = year, y = mean_food,
+           color = factor(fourps), group = factor(fourps))) +
+  annotate("rect", xmin = 2010.5, xmax = 2016.5, ymin = -Inf, ymax = Inf,
+           fill = "gray95", alpha = 0.5) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3.5, shape = 21, fill = "white", stroke = 1.5) +
+  geom_text(aes(label = paste0("\u20B1", format(round(mean_food, 0), big.mark = ","))),
+            vjust = -1.2, size = 2.8, show.legend = FALSE) +
+  scale_color_manual(values = c("0" = "#E07B6A", "1" = "#5B9BD5"),
+                     labels = c("Non-4Ps (Control)", "4Ps (Treated)")) +
+  scale_x_continuous(breaks = c(2011, 2013, 2014, 2016)) +
+  scale_y_continuous(labels = comma_format(prefix = "\u20B1"),
+                     limits = c(25000, 40000)) +
+  labs(x = "Survey Year", y = "Mean Food Expenditure (\u20B1)",
+       color = "Household Group",
+       title = "Pre-Treatment Trends",
+       subtitle = "Region X | APIS 2011\u20132016") +
+  theme_classic(base_size = 15) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 15, hjust = 0),
+    plot.subtitle = element_text(size = 15, color = "gray40", hjust = 0),
+    axis.title    = element_text(size = 15, face = "bold"),
+    axis.text     = element_text(size = 15),
+    legend.position   = "right",
+    legend.title      = element_text(face = "bold", size = 15),
+    legend.text       = element_text(size = 15),
+    legend.background = element_rect(fill = "white", color = "gray80"),
+    panel.grid.major.y = element_line(color = "gray90", linewidth = 0.4),
+    panel.grid.major.x = element_blank(),
+    plot.margin = margin(15, 20, 15, 15)
+  )
+
+ggsave("pre_did_rice_plot.png", plot = pre_did_plot,
+       width = 8, height = 5, dpi = 300, bg = "white")
+pre_did_plot
+```
+
+### A.7.2 Placebo DiD Test (2014 vs. 2016)
+
+```{r}
+# Assign fake post indicator: treat 2016 as "post" under a placebo policy in 2014
+placebo_data <- combined5 %>%
+  filter(year %in% c(2014, 2016)) %>%
+  mutate(post = ifelse(year == 2016, 1, 0)) %>%
+  filter(!is.na(FOOD), !is.na(fourps), !is.na(RFACT),
+         !is.na(FSIZE), !is.na(PUFEQ6G), !is.na(TOINC),
+         !is.na(PUFH04_SEX), !is.na(PUFH05_AGE))
+
+did_placebo <- lm(
+  FOOD ~ fourps * post + FSIZE + log(TOINC) + PUFEQ6G,
+  data    = placebo_data,
+  weights = RFACT
+)
+summary(did_placebo)
+```
+
+---
+
+## A.8 Event Study
+
+```{r}
+# All five survey years; 2016 as reference year
+combined_es <- combined5 %>%
+  filter(year %in% c(2011, 2013, 2014, 2016, 2017)) %>%
+  mutate(year = relevel(factor(year), ref = "2016"))
+
+event_model <- lm(
+  FOOD ~ fourps * year + FSIZE + log(TOINC) + PUFEQ6G,
+  data    = combined_es,
+  weights = RFACT
+)
+summary(event_model)
+```
+
+```{r, echo=FALSE}
+# Extract and prepare interaction coefficients
+event_results <- tidy(event_model) %>%
+  filter(grepl("fourps:year", term)) %>%
+  mutate(
+    year    = c(2011, 2013, 2014, 2017),
+    period  = ifelse(year == 2017, "Post-Intervention", "Pre-Intervention"),
+    ci_low  = estimate - 1.645 * std.error,
+    ci_high = estimate + 1.645 * std.error,
+    significant = ifelse(ci_low > 0 | ci_high < 0, "Significant", "Not Significant")
+  )
+
+font_15 <- 15 / .pt
+
+event_study_plot <- ggplot(event_results, aes(x = year, y = estimate)) +
+  annotate("rect", xmin = 2010.5, xmax = 2016.25, ymin = -Inf, ymax = Inf,
+           fill = "gray95", alpha = 0.6) +
+  annotate("rect", xmin = 2016.25, xmax = 2017.5, ymin = -Inf, ymax = Inf,
+           fill = "lightyellow", alpha = 0.6) +
+  geom_vline(xintercept = 2016.25, linetype = "dotted",
+             color = "gray40", linewidth = 0.8) +
+  geom_hline(yintercept = 0, linetype = "dashed",
+             color = "gray30", linewidth = 0.8) +
+  annotate("text", x = 2013, y = max(event_results$ci_high) * 0.97,
+           label = "Pre-Intervention", size = font_15,
+           color = "gray40", fontface = "italic") +
+  annotate("text", x = 2016.6, y = max(event_results$ci_high) * 0.97,
+           label = "Post", size = font_15,
+           color = "gray40", fontface = "italic") +
+  annotate("text", x = 2015.8, y = min(event_results$ci_low) * 0.85,
+           label = "Reference\nYear (2016)", size = font_15,
+           color = "gray50", fontface = "italic") +
+  annotate("point", x = 2016, y = 0, size = 3, shape = 21,
+           fill = "white", color = "gray50", stroke = 1.2) +
+  geom_errorbar(aes(ymin = ci_low, ymax = ci_high, color = significant),
+                width = 0.3, linewidth = 0.9) +
+  geom_point(aes(color = significant, fill = significant),
+             size = 2.8, shape = 21, stroke = 1.5) +
+  scale_color_manual(values = c("Significant" = "#E07B6A",
+                                "Not Significant" = "#5B9BD5")) +
+  scale_fill_manual(values  = c("Significant" = "#E07B6A",
+                                "Not Significant" = "#5B9BD5")) +
+  scale_x_continuous(breaks = c(2011, 2013, 2014, 2016, 2017),
+                     labels = c("2011", "2013", "2014",
+                                "2016\n(Ref)", "2017\n(Post)")) +
+  scale_y_continuous(labels = comma_format(prefix = "\u20B1")) +
+  labs(x = "Survey Year",
+       y = "Treatment Effect on Food Expenditure (\u20B1)",
+       color = "Statistical Significance",
+       fill  = "Statistical Significance",
+       title = "Event Study: Effect of Rice Subsidy on Food Expenditure",
+       subtitle = "Region X | Reference year: 2016 | 90% confidence intervals shown") +
+  theme_classic(base_size = 15) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 15, hjust = 0),
+    plot.subtitle = element_text(size = 15, color = "gray40", hjust = 0),
+    axis.title    = element_text(size = 15, face = "bold"),
+    axis.text     = element_text(size = 15),
+    legend.position    = "none",
+    panel.grid.major.y = element_line(color = "gray90", linewidth = 0.4),
+    panel.grid.major.x = element_blank(),
+    plot.margin = margin(15, 20, 15, 15)
+  )
+
+ggsave("event_study_did_rice_plot.png", plot = event_study_plot,
+       width = 8, height = 5, dpi = 300, bg = "white")
+event_study_plot
+```
+
+
+# =============================================================================
+# E-VALUE SENSITIVITY ANALYSIS FOR DiD
+# =============================================================================
+
+## E-Value Input Parameters
+
+```{r}
+est  <- coef(did_model_w)["fourps:post"]
+print(est)
+se <- coef(summary(did_model_w))["fourps:post", "Std. Error"]
+print(se)
+sd_y <- sigma(did_model_w)
+print(sd_y)
+```
+
+## E-Value Results
+
+```{r}
+EValue::evalues.OLS(est = est, se = se, sd = sd_y, delta = 1)
+```
+
+
+## E-Value Contour Plot
+
+```{r}
+# ── 1. Rice DiD model ───────────────────────────────────────────────────────
+did_model_w <- lm(
+  FOOD ~ fourps * post + FSIZE + log(TOINC) + PUFEQ6G,
+  data    = did_data,
+  weights = RFACT
+)
+
+# ── 2. Extract DiD coefficient, SE, and residual SD ──────────────────────────
+est  <- coef(did_model_w)["fourps:post"]
+se <- coef(summary(did_model_w))["fourps:post", "Std. Error"]
+sd_y <- sigma(did_model_w)
+
+# ── 3. Compute E-values ──────────────────────────────────────────────────────
+ev_rice <- EValue::evalues.OLS(
+  est   = est,
+  se    = se,
+  sd    = sd_y,
+  delta = 1
+)
+
+# ── 4. Extract RR and E-values ───────────────────────────────────────────────
+rr_point <- ev_rice["RR", "point"]
+rr_lower <- ev_rice["RR", "lower"]
+
+e_point <- ev_rice["E-values", "point"]
+e_ci    <- ev_rice["E-values", "lower"]
+
+# ── 5. E-value contour function ──────────────────────────────────────────────
+evalue_curve <- function(x, rr) {
+  rr * (x - 1) / (x - rr)
+}
+
+# ── 6. Curve data ────────────────────────────────────────────────────────────
+# Point-estimate contour
+df_point <- data.frame(
+  x = seq(rr_point + 0.0001, 1.35, length.out = 2000)
+)
+df_point$y <- evalue_curve(df_point$x, rr_point)
+df_point <- subset(df_point, y >= 1 & y <= 6)
+
+# CI contour
+df_ci <- data.frame(
+  x = seq(rr_lower + 0.0001, 1.35, length.out = 2000)
+)
+df_ci$y <- evalue_curve(df_ci$x, rr_lower)
+df_ci <- subset(df_ci, y >= 1 & y <= 6)
+
+# ── 7. Labels ────────────────────────────────────────────────────────────────
+point_label <- data.frame(
+  x = e_point,
+  y = e_point,
+  label = sprintf("E-value: (%.3f, %.3f)", e_point, e_point)
+)
+
+ci_label <- data.frame(
+  x = e_ci,
+  y = e_ci,
+  label = sprintf("E-value (CI): (%.3f, %.3f)", e_ci, e_ci)
+)
+
+# ── 8. Plot ────────────────────────────────────────────────────────────────
+p_rice <- ggplot() +
+  annotate("rect", xmin = 1, xmax = 6, ymin = 1,
+           ymax = 6, fill = "grey80", alpha = 0.30) +
+  
+  geom_hline(yintercept = 1, linetype =
+               "dashed", linewidth = 0.7, color = "grey50") +
+  
+  geom_line(data = df_point, aes(x = x, y = y),
+            color = "#3266AD", linewidth = 1.3) +
+  
+  geom_line(data = df_ci, aes(x = x, y = y),
+            color = "grey55", linewidth = 1.0, linetype = "dashed") +
+  
+  geom_point(data = point_label, aes(x = x,
+                                     y = y), shape = 21, size = 3,
+             fill = "white", color = "#3266AD", stroke = 1.6) +
+  
+  geom_text(data = point_label, aes(x = x, 
+                                    y = y, label = label),
+            nudge_x = 0.03, nudge_y = 0.03,   
+            hjust = 0, size = 3.2, color = "#3266AD") +
+  
+  geom_point(data = ci_label, aes(x = x, y = y),
+             shape = 21, size = 3,
+             fill = "white", color = "grey45",
+             stroke = 1.6) +
+  
+  geom_text(data = ci_label, aes(x = x, y = y,
+                                 label = label),
+            nudge_x = 0.02, nudge_y = 0.02,
+            hjust = 0, size = 3.2, color = "grey35") +
+  
+  labs(title = "E-value Contour Plot",
+       subtitle = "Rice Subsidy ATT Estimate",
+       x = "Confounder–Exposure association (RR scale)",
+       y = "Confounder–Outcome association (RR scale)") +
+  
+  coord_cartesian(
+    xlim = c(0.99, 1.3),
+    ylim = c(0.99, 1.3),
+    clip = "on"            
+  ) +
+  
+  scale_x_continuous(breaks = seq(1.0, 1.3, by = 0.1)) +
+  scale_y_continuous(breaks = seq(1.0, 1.3, by = 0.1)) +
+  
+  theme_minimal(base_size = 13) +
+  
+  theme(
+    plot.title = element_text(face = "bold",
+                              size = 14, hjust = 0, color = "grey10", 
+                              margin = margin(b = 4)),
+    
+    plot.subtitle = element_text(size = 10,
+                                 hjust = 0, color = "grey45", 
+                                 margin = margin(b = 10)),
+    
+    axis.title = element_text(face = "bold",
+                              size = 11, color = "grey20"),
+    
+    axis.text = element_text(color = "grey30",
+                             size = 10),
+    
+    axis.line = element_line(color = "grey30",
+                             linewidth = 0.4),
+    
+    panel.grid.major = element_line(color = "grey88", linewidth = 0.35),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(15, 25, 15, 15)
+  )
+
+p_rice
+
+ggsave("evalue_did_rice_plot.png", plot = p_rice, 
+       width = 7, height = 4.5, dpi = 300, bg = "white")
+```
+
+
+
+
